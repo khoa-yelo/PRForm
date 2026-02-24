@@ -1,0 +1,31 @@
+# Large data files
+*.zip
+viral_complete_subset_data/
+*.csv
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# Environment files
+.env
+.venv
+env/
+venv/
+bin/
+lib/
+share/
+pyvenv.cfg

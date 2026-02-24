@@ -1,0 +1,19 @@
+name: py312_PRForm
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.12
+  - numpy
+  - pandas
+  - scipy
+  - seaborn
+  - matplotlib
+  - scikit-learn
+  - biopython
+  - bcbio-gff
+  - ete3
+  - ncbi-datasets-cli
+  - ipykernel
+  - pip
