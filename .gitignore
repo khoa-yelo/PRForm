@@ -1,6 +1,6 @@
 # Large data files
 *.zip
-viral_complete_subset_data/
+viral_data_all/
 *.csv
 
 # OS generated files
