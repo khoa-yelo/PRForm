@@ -8,6 +8,7 @@ dependencies:
   - numpy
   - pandas
   - scipy
+  - mmseqs2
   - seaborn
   - matplotlib
   - scikit-learn

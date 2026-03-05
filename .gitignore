@@ -2,6 +2,8 @@
 *.zip
 viral_data_all/
 *.csv
+clustering_results/
+mmseqs_db*
 
 # OS generated files
 .DS_Store

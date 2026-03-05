@@ -46,7 +46,7 @@ def parse_assembly_report(jsonl_path, csv_path):
     print(f"Done! Processed {count} entries.")
 
 if __name__ == "__main__":
-    input_jsonl = 'viral_complete_subset_data/ncbi_dataset/data/assembly_data_report.jsonl'
+    input_jsonl = 'viral_data_all/ncbi_dataset/data/assembly_data_report.jsonl'
     output_csv = 'assembly_data_report.csv'
     
     if os.path.exists(input_jsonl):
