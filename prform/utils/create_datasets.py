@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-create_prf_datasets.py  –  Build training data for Programmed Ribosomal Frameshift (PRF) prediction
+create_datasets.py  –  Build training data for Programmed Ribosomal Frameshift (PRF) prediction
 
 This script:
   1. Reads a CSV file with viral genome sequences and annotated PRF positions.
