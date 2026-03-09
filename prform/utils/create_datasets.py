@@ -37,7 +37,7 @@ Output per split:
       block_idx     – (N,) int32
 
 Usage:
-  python create_prf_datasets.py \
+  python create_datasets.py \
     --csv       prf_data.csv \
     --outdir    data/prf \
     --block_len 15000 \
