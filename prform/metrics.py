@@ -1,0 +1,153 @@
+"""
+Metrics for PRF (Programmed Ribosomal Frameshift) prediction model evaluation.
+
+Adapted from SpliceAI metrics for binary classification:
+  - Single-class PR-AUC, ROC-AUC
+  - Top-k accuracy for the positive (PRF) class
+  - F1, precision, recall at a given threshold
+
+All functions expect:
+  probs:   np.ndarray of shape (N,) — predicted probabilities for PRF class
+  targets: np.ndarray of shape (N,) — binary labels (0 or 1)
+"""
+
+import numpy as np
+from sklearn.metrics import (
+    average_precision_score,
+    roc_auc_score,
+    precision_recall_curve,
+    f1_score,
+    precision_score,
+    recall_score,
+)
+
+
+def topk_accuracy(probs, targets):
+    """
+    Top-k accuracy for the positive class.
+
+    k = number of true positives in targets.
+    Among the top-k predicted positions, what fraction are actual PRF sites?
+
+    Args:
+        probs (np.ndarray):   shape (N,) predicted probabilities.
+        targets (np.ndarray): shape (N,) binary labels.
+    Returns:
+        float: top-k accuracy, or NaN if no positives exist.
+    """
+    k = int(targets.sum())
+    if k == 0:
+        return float("nan")
+    topk_indices = probs.argsort()[::-1][:k]
+    correct = targets[topk_indices].sum()
+    return float(correct / k)
+
+
+def pr_auc(probs, targets):
+    """
+    Area under the Precision-Recall curve.
+
+    Args:
+        probs (np.ndarray):   shape (N,) predicted probabilities.
+        targets (np.ndarray): shape (N,) binary labels.
+    Returns:
+        float: PR-AUC score, or NaN if only one class present.
+    """
+    if len(np.unique(targets)) < 2:
+        return float("nan")
+    return float(average_precision_score(targets, probs))
+
+
+def roc_auc(probs, targets):
+    """
+    Area under the ROC curve.
+
+    Args:
+        probs (np.ndarray):   shape (N,) predicted probabilities.
+        targets (np.ndarray): shape (N,) binary labels.
+    Returns:
+        float: ROC-AUC score, or NaN if only one class present.
+    """
+    if len(np.unique(targets)) < 2:
+        return float("nan")
+    return float(roc_auc_score(targets, probs))
+
+
+def best_f1_threshold(probs, targets):
+    """
+    Find the threshold that maximises F1 on the precision-recall curve.
+
+    Args:
+        probs (np.ndarray):   shape (N,) predicted probabilities.
+        targets (np.ndarray): shape (N,) binary labels.
+    Returns:
+        tuple: (best_f1, best_threshold)
+    """
+    if len(np.unique(targets)) < 2:
+        return float("nan"), float("nan")
+    precision, recall, thresholds = precision_recall_curve(targets, probs)
+    # precision_recall_curve returns len(thresholds) = len(precision) - 1
+    f1_scores = 2 * precision[:-1] * recall[:-1] / (precision[:-1] + recall[:-1] + 1e-12)
+    best_idx = f1_scores.argmax()
+    return float(f1_scores[best_idx]), float(thresholds[best_idx])
+
+
+def classification_metrics_at_threshold(probs, targets, threshold=0.5):
+    """
+    Compute precision, recall, F1 at a given threshold.
+
+    Args:
+        probs (np.ndarray):   shape (N,) predicted probabilities.
+        targets (np.ndarray): shape (N,) binary labels.
+        threshold (float):    decision threshold.
+    Returns:
+        dict with keys: precision, recall, f1, threshold
+    """
+    preds = (probs >= threshold).astype(int)
+    return {
+        "precision": float(precision_score(targets, preds, zero_division=0)),
+        "recall": float(recall_score(targets, preds, zero_division=0)),
+        "f1": float(f1_score(targets, preds, zero_division=0)),
+        "threshold": threshold,
+    }
+
+
+def compute_all_metrics(probs, targets):
+    """
+    Compute all metrics for a binary PRF prediction task.
+
+    Args:
+        probs (np.ndarray):   shape (N,) predicted probabilities.
+        targets (np.ndarray): shape (N,) binary labels.
+    Returns:
+        dict with all metric values.
+    """
+    best_f1, best_thresh = best_f1_threshold(probs, targets)
+    return {
+        "topk_acc": topk_accuracy(probs, targets),
+        "pr_auc": pr_auc(probs, targets),
+        "roc_auc": roc_auc(probs, targets),
+        "best_f1": best_f1,
+        "best_f1_threshold": best_thresh,
+        "metrics_at_0.5": classification_metrics_at_threshold(probs, targets, 0.5),
+        "n_positive": int(targets.sum()),
+        "n_total": len(targets),
+    }
+
+
+def to_serializable(obj):
+    """
+    Convert an object to a JSON-serializable format.
+    """
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.integer,)):
+        return int(obj)
+    elif isinstance(obj, (np.floating,)):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: to_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [to_serializable(v) for v in obj]
+    else:
+        return obj
