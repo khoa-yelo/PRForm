@@ -11,6 +11,7 @@ but may be larger for extended alphabets).
 Returns tensors in the format expected by the PRForm model:
   - X: (C, L) float32  — channels-first for Conv1d
   - Y: (block_len,) float32 — flat binary labels for BCEWithLogitsLoss
+  - meta: dict of metadata strings + block_idx int
 
 The encoding dimension C is auto-detected from the data and exposed via
 the `in_channels` property so the model can be constructed accordingly.
@@ -20,6 +21,11 @@ import pickle
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+
+METADATA_STR_KEYS = [
+    "accession_id", "record_id", "cluster_id",
+    "species_taxid", "genus_taxid", "species_name", "genus_name",
+]
 
 
 class PRFDataset(Dataset):
@@ -65,7 +71,7 @@ class PRFDataset(Dataset):
         n = max(1, int(len(records) * fraction))
         self.records = records[:n]
         self._h5_file = None
-        # Detect encoding dimension from first record
+        self._meta = None
         self._in_channels = self.records[0]["sequence"].shape[-1]
 
     def _init_h5(self, path, fraction):
@@ -81,8 +87,8 @@ class PRFDataset(Dataset):
         self._Y = self._h5_file["Y"]
         total = self._X.shape[0]
         self._n = max(1, int(total * fraction))
-        self.records = None  # not used for h5
-        # Detect encoding dimension: X shape is (N, L, C)
+        self.records = None
+        self._meta = self._h5_file["metadata"] if "metadata" in self._h5_file else {}
         self._in_channels = self._X.shape[-1]
 
     @property
@@ -95,6 +101,26 @@ class PRFDataset(Dataset):
             return len(self.records)
         else:
             return self._n
+
+    def _read_metadata(self, idx):
+        """Read metadata dict for sample at index ``idx``."""
+        if self.format == "pkl":
+            rec = self.records[idx]
+            meta = {k: str(rec.get(k, "")) for k in METADATA_STR_KEYS}
+            meta["block_idx"] = int(rec.get("block_idx", 0))
+        else:
+            meta = {}
+            for k in METADATA_STR_KEYS:
+                if k in self._meta:
+                    val = self._meta[k][idx]
+                    meta[k] = val.decode("utf-8") if isinstance(val, bytes) else str(val)
+                else:
+                    meta[k] = ""
+            if "block_idx" in self._meta:
+                meta["block_idx"] = int(self._meta["block_idx"][idx])
+            else:
+                meta["block_idx"] = 0
+        return meta
 
     def __getitem__(self, idx):
         if self.format == "pkl":
@@ -111,7 +137,9 @@ class PRFDataset(Dataset):
         # Squeeze Y from (block_len, 1) → (block_len,) for BCEWithLogitsLoss
         y = np.asarray(y, dtype=np.float32).squeeze(-1)  # (block_len,)
 
-        return torch.from_numpy(x), torch.from_numpy(y)
+        meta = self._read_metadata(idx)
+
+        return torch.from_numpy(x), torch.from_numpy(y), meta
 
     def __del__(self):
         """Close HDF5 file handle if open."""

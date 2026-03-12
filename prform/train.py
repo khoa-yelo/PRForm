@@ -55,6 +55,9 @@ def parse_args():
         "--learning_rate", type=float, default=0.001, help="Learning rate for optimizer"
     )
     parser.add_argument(
+        "--mid_channels", type=int, default=32, help="Mid channels for model. Default: 32"
+    )
+    parser.add_argument(
         "--dropout", type=float, default=0.1, help="Dropout rate for model"
     )
     parser.add_argument(
@@ -110,7 +113,8 @@ def get_model(args, in_channels):
     if args.flank not in model_map:
         raise ValueError(f"Invalid flank size {args.flank}. Choose from {list(model_map.keys())}")
     return model_map[args.flank](
-        in_channels=in_channels, mid_channels=32, out_channels=1, dropout=args.dropout
+        in_channels=in_channels, mid_channels=args.mid_channels,
+        out_channels=1, dropout=args.dropout,
     )
 
 
@@ -126,8 +130,7 @@ def compute_pos_weight(dataset):
     """
     n_pos = 0
     n_total = 0
-    for _, targets in dataset:
-        # targets: (block_len,) float
+    for _, targets, _meta in dataset:
         n_pos += targets.sum().item()
         n_total += targets.numel()
     n_neg = n_total - n_pos
@@ -156,7 +159,7 @@ def run_epoch(model, loader, criterion, optimizer, device, train=True):
     all_logits, all_targets = [], []
 
     with context:
-        for inputs, targets in loader:
+        for inputs, targets, _meta in loader:
             inputs, targets = inputs.to(device), targets.to(device)
             if train:
                 optimizer.zero_grad()
