@@ -13,17 +13,21 @@ This script:
   6. Splits into train/val/test based on the 'split' column and writes output files.
 
 Input CSV columns:
-  accession_id  – id of the viral genome
-  record_id     – id of the record in the corresponding accession
-  cluster_id    – a record_id representative id
-  prf_position  – position of PRF event (1-based); can be comma-separated for multiple sites
-  strand        – +/- strand
-  sequence      – raw DNA/RNA sequence
-  split         – train / val / test
+  accession_id   – id of the viral genome
+  record_id      – id of the record in the corresponding accession
+  cluster_id     – a record_id representative id
+  prf_position   – position of PRF event (1-based); can be comma-separated for multiple sites
+  strand         – +/- strand
+  sequence       – raw DNA/RNA sequence
+  split          – train / val / test
+  species_taxid  – (optional) NCBI taxonomy ID for the species
+  genus_taxid    – (optional) NCBI taxonomy ID for the genus
+  species_name   – (optional) species name string
+  genus_name     – (optional) genus name string
 
 Output per split:
   Pickle (.pkl) – list of dicts with keys:
-    'accession_id', 'record_id', 'cluster_id', 'block_idx',
+    'accession_id', 'record_id', 'cluster_id', 'block_idx', 'species_taxid', 'genus_taxid', 'species_name', 'genus_name',
     'sequence' (one-hot, shape [block_len + 2*flank, 4]),
     'y' (binary label, shape [block_len, 1])
 
@@ -31,10 +35,14 @@ Output per split:
     X     – (N, block_len + 2*flank, 4) uint8
     Y     – (N, block_len, 1) uint8
     metadata (group) –
-      accession_id  – (N,) variable-length string
-      record_id     – (N,) variable-length string
-      cluster_id    – (N,) variable-length string
-      block_idx     – (N,) int32
+      accession_id   – (N,) variable-length string
+      record_id      – (N,) variable-length string
+      cluster_id     – (N,) variable-length string
+      species_taxid  – (N,) variable-length string
+      genus_taxid    – (N,) variable-length string
+      species_name   – (N,) variable-length string
+      genus_name     – (N,) variable-length string
+      block_idx      – (N,) int32
 
 Usage:
   python create_prf_datasets.py \
@@ -111,8 +119,9 @@ def process_record_blocks(row, block_len: int, flank: int):
 
     Yields
     ------
-    dict with keys: accession_id, record_id, cluster_id, block_idx,
-         sequence (np.ndarray shape [block_len+2*flank, 4]),
+    dict with keys: accession_id, record_id, cluster_id,
+         species_taxid, genus_taxid, species_name, genus_name,
+         block_idx, sequence (np.ndarray shape [block_len+2*flank, 4]),
          y (np.ndarray shape [block_len, 1])
     """
     raw_seq = str(row["sequence"]).strip()
@@ -173,6 +182,10 @@ def process_record_blocks(row, block_len: int, flank: int):
             "accession_id": row["accession_id"],
             "record_id": row["record_id"],
             "cluster_id": row.get("cluster_id", ""),
+            "species_taxid": str(row.get("species_taxid", "")),
+            "genus_taxid": str(row.get("genus_taxid", "")),
+            "species_name": str(row.get("species_name", "")),
+            "genus_name": str(row.get("genus_name", "")),
             "block_idx": blk_idx,
             "sequence": block_x,  # shape (block_len + 2*flank, 4)
             "y": y,               # shape (block_len, 1)
@@ -202,6 +215,10 @@ def save_h5(records, outdir):
         accession_id – (N,) variable-length string
         record_id    – (N,) variable-length string
         cluster_id   – (N,) variable-length string
+        species_taxid – (N,) variable-length string
+        genus_taxid   – (N,) variable-length string
+        species_name – (N,) variable-length string
+        genus_name   – (N,) variable-length string
         block_idx    – (N,) int32
     """
     import h5py
@@ -227,6 +244,10 @@ def save_h5(records, outdir):
             acc_ds = meta.create_dataset("accession_id", shape=(N,), dtype=vlen_str)
             rec_ds = meta.create_dataset("record_id", shape=(N,), dtype=vlen_str)
             clu_ds = meta.create_dataset("cluster_id", shape=(N,), dtype=vlen_str)
+            sptx_ds = meta.create_dataset("species_taxid", shape=(N,), dtype=vlen_str)
+            gntx_ds = meta.create_dataset("genus_taxid", shape=(N,), dtype=vlen_str)
+            spnm_ds = meta.create_dataset("species_name", shape=(N,), dtype=vlen_str)
+            gnnm_ds = meta.create_dataset("genus_name", shape=(N,), dtype=vlen_str)
             blk_ds = meta.create_dataset("block_idx", shape=(N,), dtype=np.int32)
 
             for i, rec in enumerate(recs):
@@ -235,6 +256,10 @@ def save_h5(records, outdir):
                 acc_ds[i] = str(rec["accession_id"])
                 rec_ds[i] = str(rec["record_id"])
                 clu_ds[i] = str(rec["cluster_id"])
+                sptx_ds[i] = str(rec.get("species_taxid", ""))
+                gntx_ds[i] = str(rec.get("genus_taxid", ""))
+                spnm_ds[i] = str(rec.get("species_name", ""))
+                gnnm_ds[i] = str(rec.get("genus_name", ""))
                 blk_ds[i] = rec["block_idx"]
 
 
