@@ -2,6 +2,7 @@
 *.zip
 viral_data_all/
 *.csv
+*.tsv
 clustering_results/
 mmseqs_db*
 
