@@ -14,8 +14,11 @@ import os
 import sys
 import json
 
+import pandas as pd
+
 import torch
 import numpy as np
+from tqdm import tqdm
 
 from torch.utils.data import DataLoader
 
@@ -140,7 +143,7 @@ def compute_pos_weight(dataset):
     return torch.tensor(weight, dtype=torch.float32)
 
 
-def run_epoch(model, loader, criterion, optimizer, device, train=True):
+def run_epoch(model, loader, criterion, optimizer, device, train=True, neg_ratio=10, min_neg_per_batch=500):
     """
     Run a single epoch of training or validation.
 
@@ -148,6 +151,10 @@ def run_epoch(model, loader, criterion, optimizer, device, train=True):
       - Model outputs shape (B, 1, L) — raw logits
       - Targets shape (B, L) — binary labels
       - Loss: BCEWithLogitsLoss applied to flattened logits and targets
+
+    For metrics, all positive positions are kept and negatives are subsampled
+    at neg_ratio * n_pos (floored at min_neg_per_batch) to avoid OOM from
+    concatenating the full (B, L) output across all batches.
     """
     if train:
         model.train()
@@ -156,10 +163,13 @@ def run_epoch(model, loader, criterion, optimizer, device, train=True):
 
     context = torch.enable_grad() if train else torch.no_grad()
     total_loss = 0.0
-    all_logits, all_targets = [], []
+    pos_logits_buf, pos_targets_buf = [], []
+    neg_logits_buf, neg_targets_buf = [], []
 
+    phase = "train" if train else "val"
+    pbar = tqdm(loader, desc=phase, leave=False, unit="batch", file=sys.stderr)
     with context:
-        for inputs, targets, _meta in loader:
+        for inputs, targets, _meta in pbar:
             inputs, targets = inputs.to(device), targets.to(device)
             sample_weights = torch.tensor(
                 _meta["sample_weight"], dtype=torch.float32, device=device
@@ -177,12 +187,39 @@ def run_epoch(model, loader, criterion, optimizer, device, train=True):
                 optimizer.step()
 
             total_loss += loss.item()
-            all_logits.append(outputs.detach().cpu().numpy())
-            all_targets.append(targets.detach().cpu().numpy())
 
-    # Flatten all predictions and targets
-    logits = np.concatenate(all_logits).ravel()
-    targets = np.concatenate(all_targets).ravel()
+            flat_logits = outputs.detach().cpu().half().numpy().ravel()
+            flat_targets = targets.detach().cpu().numpy().astype(np.int8).ravel()
+
+            pos_mask = flat_targets.astype(bool)
+            pos_logits_buf.append(flat_logits[pos_mask])
+            pos_targets_buf.append(flat_targets[pos_mask])
+
+            neg_idx = np.where(~pos_mask)[0]
+            n_neg_keep = max(min_neg_per_batch, neg_ratio * int(pos_mask.sum()))
+            n_neg_keep = min(n_neg_keep, len(neg_idx))
+            if n_neg_keep > 0:
+                sampled = np.random.choice(neg_idx, n_neg_keep, replace=False)
+                neg_logits_buf.append(flat_logits[sampled])
+                neg_targets_buf.append(flat_targets[sampled])
+
+            pbar.set_postfix(loss=f"{loss.item():.4f}")
+
+    all_pos_logits = np.concatenate(pos_logits_buf) if pos_logits_buf else np.array([], dtype=np.float16)
+    all_pos_targets = np.concatenate(pos_targets_buf) if pos_targets_buf else np.array([], dtype=np.int8)
+    all_neg_logits = np.concatenate(neg_logits_buf) if neg_logits_buf else np.array([], dtype=np.float16)
+    all_neg_targets = np.concatenate(neg_targets_buf) if neg_targets_buf else np.array([], dtype=np.int8)
+
+    # Final downsample: keep at most neg_ratio * total positives negatives
+    n_pos_total = len(all_pos_logits)
+    n_neg_keep_total = min(len(all_neg_logits), neg_ratio * n_pos_total)
+    if n_neg_keep_total < len(all_neg_logits):
+        idx = np.random.choice(len(all_neg_logits), n_neg_keep_total, replace=False)
+        all_neg_logits = all_neg_logits[idx]
+        all_neg_targets = all_neg_targets[idx]
+
+    logits = np.concatenate([all_pos_logits, all_neg_logits]).astype(np.float32)
+    targets = np.concatenate([all_pos_targets, all_neg_targets])
 
     # Convert logits to probabilities via sigmoid
     probs = 1.0 / (1.0 + np.exp(-logits))
@@ -235,37 +272,54 @@ def train(args, logger):
     logger.info("Training with flank size: %d", args.flank)
     logger.info("Training with random seed: %d", args.seed)
 
-    for epoch in range(args.num_epochs):
+    metrics_history = []
+    best_val_loss = float("inf")
+    csv_path = os.path.join(args.output_dir, "metrics.csv")
+    json_path = os.path.join(args.output_dir, "metrics.json")
+
+    epoch_pbar = tqdm(range(args.num_epochs), desc="epochs", unit="epoch", file=sys.stderr)
+    for epoch in epoch_pbar:
         train_metrics = run_epoch(
             model, train_loader, criterion, optimizer, device, train=True
         )
         val_metrics = run_epoch(
             model, val_loader, criterion, optimizer, device, train=False
         )
+        epoch_pbar.set_postfix(
+            train_loss=f"{train_metrics['loss']:.6f}",
+            val_loss=f"{val_metrics['loss']:.6f}",
+            val_roc_auc=f"{val_metrics['roc_auc']:.4f}",
+            val_pr_auc=f"{val_metrics['pr_auc']:.4f}",
+        )
 
-        # Save metrics
-        with open(
-            os.path.join(args.output_dir, f"epoch_{epoch + 1}_metrics.json"),
-            "w",
-            encoding="utf-8",
-        ) as f:
-            json.dump(
-                {
-                    "train": to_serializable(train_metrics),
-                    "val": to_serializable(val_metrics),
-                },
-                f,
-                indent=4,
-            )
+        epoch_record = {
+            "epoch": epoch + 1,
+            "train": to_serializable(train_metrics),
+            "val": to_serializable(val_metrics),
+        }
+        metrics_history.append(epoch_record)
+
+        # Overwrite consolidated JSON each epoch
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(metrics_history, f, indent=4)
+
+        # Append one row to the CSV (write header only on first epoch)
+        row = {"epoch": epoch + 1}
+        for split, m in [("train", train_metrics), ("val", val_metrics)]:
+            for key in ["loss", "pr_auc", "roc_auc", "topk_acc", "best_f1", "true_pos", "pred_pos", "n_total"]:
+                row[f"{split}_{key}"] = m[key]
+        pd.DataFrame([row]).to_csv(
+            csv_path, mode="w" if epoch == 0 else "a", header=(epoch == 0), index=False
+        )
 
         logger.info("Epoch %d/%d", epoch + 1, args.num_epochs)
-        logger.info("  Train — Loss: %.4f  PR-AUC: %.4f  ROC-AUC: %.4f  Top-k: %.4f  Best-F1: %.4f",
+        logger.info("  Train — Loss: %.6f  PR-AUC: %.4f  ROC-AUC: %.4f  Top-k: %.4f  Best-F1: %.4f",
                      train_metrics["loss"],
                      train_metrics["pr_auc"],
                      train_metrics["roc_auc"],
                      train_metrics["topk_acc"],
                      train_metrics["best_f1"])
-        logger.info("  Val   — Loss: %.4f  PR-AUC: %.4f  ROC-AUC: %.4f  Top-k: %.4f  Best-F1: %.4f",
+        logger.info("  Val   — Loss: %.6f  PR-AUC: %.4f  ROC-AUC: %.4f  Top-k: %.4f  Best-F1: %.4f",
                      val_metrics["loss"],
                      val_metrics["pr_auc"],
                      val_metrics["roc_auc"],
@@ -277,8 +331,15 @@ def train(args, logger):
                      val_metrics["true_pos"], val_metrics["pred_pos"], val_metrics["n_total"])
         logger.info("-" * 60)
 
+        # Save best model
+        if val_metrics["loss"] < best_val_loss:
+            best_val_loss = val_metrics["loss"]
+            best_path = os.path.join(args.output_dir, "model_best.pth")
+            torch.save(model.state_dict(), best_path)
+            logger.info("  New best val loss: %.6f — saved to %s", best_val_loss, best_path)
+
         # Save checkpoint
-        if (epoch + 1) % 10 == 0:
+        if (epoch + 1) % 2 == 0:
             checkpoint_path = os.path.join(args.output_dir, f"model_epoch_{epoch + 1}.pth")
             torch.save(model.state_dict(), checkpoint_path)
             logger.info("Model checkpoint saved to %s", checkpoint_path)
@@ -287,6 +348,7 @@ def train(args, logger):
     final_path = os.path.join(args.output_dir, "model_final.pth")
     torch.save(model.state_dict(), final_path)
     logger.info("Training completed. Final model saved to %s", final_path)
+    logger.info("Metrics saved to %s and %s", json_path, csv_path)
 
 
 if __name__ == "__main__":
