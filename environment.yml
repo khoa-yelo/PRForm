@@ -1,5 +1,7 @@
 name: py312_PRForm
 channels:
+  - pytorch
+  - nvidia
   - conda-forge
   - bioconda
   - defaults
@@ -20,3 +22,7 @@ dependencies:
   - ncbi-datasets-cli
   - ipykernel
   - pip
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
