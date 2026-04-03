@@ -31,4 +31,6 @@ def get_taxonomic_lineage_info(taxid):
     return rank_to_taxid, rank_to_name
 
 if __name__ == "__main__":
-  print(get_taxonomic_lineage_info(562))
+  print(get_taxonomic_lineage_info(1823908))
+  print(get_taxonomic_lineage_info(1777767))
+
