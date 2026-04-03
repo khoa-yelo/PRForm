@@ -161,13 +161,17 @@ def run_epoch(model, loader, criterion, optimizer, device, train=True):
     with context:
         for inputs, targets, _meta in loader:
             inputs, targets = inputs.to(device), targets.to(device)
+            sample_weights = torch.tensor(
+                _meta["sample_weight"], dtype=torch.float32, device=device
+            )  # (B,)
             if train:
                 optimizer.zero_grad()
 
             outputs = model(inputs)          # (B, 1, L)
             outputs = outputs.squeeze(1)     # (B, L)
 
-            loss = criterion(outputs, targets)
+            loss = criterion(outputs, targets)               # (B, L)
+            loss = (loss * sample_weights.unsqueeze(1)).mean()
             if train:
                 loss.backward()
                 optimizer.step()
@@ -222,7 +226,7 @@ def train(args, logger):
         pos_weight = None
         logger.info("Not using class weights for loss function")
 
-    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="none")
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     logger.info("Training with batch size: %d", args.batch_size)

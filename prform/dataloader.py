@@ -108,6 +108,7 @@ class PRFDataset(Dataset):
             rec = self.records[idx]
             meta = {k: str(rec.get(k, "")) for k in METADATA_STR_KEYS}
             meta["block_idx"] = int(rec.get("block_idx", 0))
+            meta["sample_weight"] = float(rec.get("sample_weight", 1.0))
         else:
             meta = {}
             for k in METADATA_STR_KEYS:
@@ -120,6 +121,10 @@ class PRFDataset(Dataset):
                 meta["block_idx"] = int(self._meta["block_idx"][idx])
             else:
                 meta["block_idx"] = 0
+            if "sample_weight" in self._meta:
+                meta["sample_weight"] = float(self._meta["sample_weight"][idx])
+            else:
+                meta["sample_weight"] = 1.0
         return meta
 
     def __getitem__(self, idx):

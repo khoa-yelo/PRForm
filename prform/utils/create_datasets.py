@@ -24,10 +24,12 @@ Input CSV columns:
   genus_taxid    – (optional) NCBI taxonomy ID for the genus
   species_name   – (optional) species name string
   genus_name     – (optional) genus name string
+  sample_weight  – (optional) per-sample training weight (float, default 1.0)
 
 Output per split:
   Pickle (.pkl) – list of dicts with keys:
     'accession_id', 'record_id', 'cluster_id', 'block_idx', 'species_taxid', 'genus_taxid', 'species_name', 'genus_name',
+    'sample_weight' (float),
     'sequence' (one-hot, shape [block_len + 2*flank, 4]),
     'y' (binary label, shape [block_len, 1])
 
@@ -43,6 +45,7 @@ Output per split:
       species_name   – (N,) variable-length string
       genus_name     – (N,) variable-length string
       block_idx      – (N,) int32
+      sample_weight  – (N,) float32
 
 Usage:
   python create_datasets.py \
@@ -138,7 +141,7 @@ def process_record_blocks(row, block_len: int, flank: int):
     L = len(raw_seq)
 
     # --- Handle strand ---
-    if strand == "-":
+    if strand in ("-", "-1"):
         raw_seq = reverse_complement(raw_seq)
         # Mirror PRF positions: if original pos is p (1-based), on rev-comp it
         # maps to L - p + 1 (still 1-based)
@@ -186,6 +189,7 @@ def process_record_blocks(row, block_len: int, flank: int):
             "genus_taxid": str(row.get("genus_taxid", "")),
             "species_name": str(row.get("species_name", "")),
             "genus_name": str(row.get("genus_name", "")),
+            "sample_weight": float(row.get("sample_weight", 1.0)),
             "block_idx": blk_idx,
             "sequence": block_x,  # shape (block_len + 2*flank, 4)
             "y": y,               # shape (block_len, 1)
@@ -249,6 +253,7 @@ def save_h5(records, outdir):
             spnm_ds = meta.create_dataset("species_name", shape=(N,), dtype=vlen_str)
             gnnm_ds = meta.create_dataset("genus_name", shape=(N,), dtype=vlen_str)
             blk_ds = meta.create_dataset("block_idx", shape=(N,), dtype=np.int32)
+            sw_ds = meta.create_dataset("sample_weight", shape=(N,), dtype=np.float32)
 
             for i, rec in enumerate(recs):
                 X_ds[i] = rec["sequence"]
@@ -261,6 +266,7 @@ def save_h5(records, outdir):
                 spnm_ds[i] = str(rec.get("species_name", ""))
                 gnnm_ds[i] = str(rec.get("genus_name", ""))
                 blk_ds[i] = rec["block_idx"]
+                sw_ds[i] = float(rec.get("sample_weight", 1.0))
 
 
 def main():
