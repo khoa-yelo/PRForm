@@ -224,6 +224,11 @@ def run_epoch(model, loader, criterion, optimizer, device, train=True, neg_ratio
     # Convert logits to probabilities via sigmoid
     probs = 1.0 / (1.0 + np.exp(-logits))
 
+    if len(probs) == 0:
+        metrics = {"loss": total_loss / len(loader), "pred_pos": 0, "true_pos": 0,
+                   "note": "no samples collected for metrics (zero positives in epoch)"}
+        return metrics
+
     metrics = compute_all_metrics(probs, targets)
     metrics["loss"] = total_loss / len(loader)
     metrics["pred_pos"] = int((probs >= 0.5).sum())
@@ -288,8 +293,8 @@ def train(args, logger):
         epoch_pbar.set_postfix(
             train_loss=f"{train_metrics['loss']:.6f}",
             val_loss=f"{val_metrics['loss']:.6f}",
-            val_roc_auc=f"{val_metrics['roc_auc']:.4f}",
-            val_pr_auc=f"{val_metrics['pr_auc']:.4f}",
+            val_roc_auc=f"{val_metrics.get('roc_auc', float('nan')):.4f}",
+            val_pr_auc=f"{val_metrics.get('pr_auc', float('nan')):.4f}",
         )
 
         epoch_record = {
@@ -307,7 +312,7 @@ def train(args, logger):
         row = {"epoch": epoch + 1}
         for split, m in [("train", train_metrics), ("val", val_metrics)]:
             for key in ["loss", "pr_auc", "roc_auc", "topk_acc", "best_f1", "true_pos", "pred_pos", "n_total"]:
-                row[f"{split}_{key}"] = m[key]
+                row[f"{split}_{key}"] = m.get(key, float("nan"))
         pd.DataFrame([row]).to_csv(
             csv_path, mode="w" if epoch == 0 else "a", header=(epoch == 0), index=False
         )
@@ -315,20 +320,20 @@ def train(args, logger):
         logger.info("Epoch %d/%d", epoch + 1, args.num_epochs)
         logger.info("  Train — Loss: %.6f  PR-AUC: %.4f  ROC-AUC: %.4f  Top-k: %.4f  Best-F1: %.4f",
                      train_metrics["loss"],
-                     train_metrics["pr_auc"],
-                     train_metrics["roc_auc"],
-                     train_metrics["topk_acc"],
-                     train_metrics["best_f1"])
+                     train_metrics.get("pr_auc", float("nan")),
+                     train_metrics.get("roc_auc", float("nan")),
+                     train_metrics.get("topk_acc", float("nan")),
+                     train_metrics.get("best_f1", float("nan")))
         logger.info("  Val   — Loss: %.6f  PR-AUC: %.4f  ROC-AUC: %.4f  Top-k: %.4f  Best-F1: %.4f",
                      val_metrics["loss"],
-                     val_metrics["pr_auc"],
-                     val_metrics["roc_auc"],
-                     val_metrics["topk_acc"],
-                     val_metrics["best_f1"])
+                     val_metrics.get("pr_auc", float("nan")),
+                     val_metrics.get("roc_auc", float("nan")),
+                     val_metrics.get("topk_acc", float("nan")),
+                     val_metrics.get("best_f1", float("nan")))
         logger.info("  Train counts: %d true positives, %d predicted positives out of %d",
-                     train_metrics["true_pos"], train_metrics["pred_pos"], train_metrics["n_total"])
+                     train_metrics["true_pos"], train_metrics["pred_pos"], train_metrics.get("n_total", 0))
         logger.info("  Val   counts: %d true positives, %d predicted positives out of %d",
-                     val_metrics["true_pos"], val_metrics["pred_pos"], val_metrics["n_total"])
+                     val_metrics["true_pos"], val_metrics["pred_pos"], val_metrics.get("n_total", 0))
         logger.info("-" * 60)
 
         # Save best model
