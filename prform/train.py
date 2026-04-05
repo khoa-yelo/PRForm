@@ -171,6 +171,9 @@ def run_epoch(model, loader, criterion, optimizer, device, train=True, neg_ratio
     total_loss = 0.0
     pos_logits_buf, pos_targets_buf = [], []
     neg_logits_buf, neg_targets_buf = [], []
+    argmax_hits, argmax_total = 0, 0
+    argmax3_hits = 0
+    argmax_flank_hits = 0
 
     phase = "train" if train else "val"
     pbar = tqdm(loader, desc=phase, leave=False, unit="batch", file=sys.stderr)
@@ -194,8 +197,23 @@ def run_epoch(model, loader, criterion, optimizer, device, train=True, neg_ratio
 
             total_loss += loss.item()
 
-            flat_logits = outputs.detach().cpu().half().numpy().ravel()
-            flat_targets = targets.detach().cpu().numpy().astype(np.int8).ravel()
+            # Argmax hit rate: per-record, check if argmax logit lands on a positive
+            batch_logits_np = outputs.detach().cpu().float().numpy()  # (B, L)
+            batch_targets_np = targets.detach().cpu().numpy()         # (B, L)
+            for b in range(batch_logits_np.shape[0]):
+                t = batch_targets_np[b]
+                if t.sum() > 0:
+                    p = batch_logits_np[b]
+                    best = p.argmax()
+                    argmax_hits += int(t[best] == 1)
+                    top3 = p.argsort()[::-1][:3]
+                    argmax3_hits += int(t[top3].sum() > 0)
+                    lo, hi = max(0, best - 3), min(len(t) - 1, best + 3)
+                    argmax_flank_hits += int(t[lo : hi + 1].sum() > 0)
+                    argmax_total += 1
+
+            flat_logits = batch_logits_np.astype(np.float16).ravel()
+            flat_targets = batch_targets_np.astype(np.int8).ravel()
 
             pos_mask = flat_targets.astype(bool)
             pos_logits_buf.append(flat_logits[pos_mask])
@@ -232,6 +250,9 @@ def run_epoch(model, loader, criterion, optimizer, device, train=True, neg_ratio
 
     if len(probs) == 0:
         metrics = {"loss": total_loss / len(loader), "pred_pos": 0, "true_pos": 0,
+                   "argmax_hit_rate": float("nan"),
+                   "argmax3_hit_rate": float("nan"),
+                   "argmax_flank_hit_rate": float("nan"),
                    "note": "no samples collected for metrics (zero positives in epoch)"}
         return metrics
 
@@ -239,6 +260,9 @@ def run_epoch(model, loader, criterion, optimizer, device, train=True, neg_ratio
     metrics["loss"] = total_loss / len(loader)
     metrics["pred_pos"] = int((probs >= 0.5).sum())
     metrics["true_pos"] = int(targets.sum())
+    metrics["argmax_hit_rate"] = float(argmax_hits / argmax_total) if argmax_total > 0 else float("nan")
+    metrics["argmax3_hit_rate"] = float(argmax3_hits / argmax_total) if argmax_total > 0 else float("nan")
+    metrics["argmax_flank_hit_rate"] = float(argmax_flank_hits / argmax_total) if argmax_total > 0 else float("nan")
 
     return metrics
 
@@ -346,7 +370,7 @@ def train(args, logger):
         # Append one row to the CSV (write header only on first epoch)
         row = {"epoch": epoch + 1, "lr": optimizer.param_groups[0]["lr"]}
         for split, m in [("train", train_metrics), ("val", val_metrics)]:
-            for key in ["loss", "pr_auc", "roc_auc", "topk_acc", "best_f1", "true_pos", "pred_pos", "n_total"]:
+            for key in ["loss", "pr_auc", "roc_auc", "topk_acc", "best_f1", "argmax_hit_rate", "argmax3_hit_rate", "argmax_flank_hit_rate", "true_pos", "pred_pos", "n_total"]:
                 row[f"{split}_{key}"] = m.get(key, float("nan"))
         pd.DataFrame([row]).to_csv(
             csv_path, mode="w" if epoch == 0 else "a", header=(epoch == 0), index=False
@@ -355,18 +379,24 @@ def train(args, logger):
         current_lr = optimizer.param_groups[0]["lr"]
 
         logger.info("Epoch %d/%d  LR: %.8f", epoch + 1, args.num_epochs, current_lr)
-        logger.info("  Train — Loss: %.6f  PR-AUC: %.4f  ROC-AUC: %.4f  Top-k: %.4f  Best-F1: %.4f",
+        logger.info("  Train — Loss: %.6f  PR-AUC: %.4f  ROC-AUC: %.4f  Top-k: %.4f  Best-F1: %.4f  ArgmaxHit: %.4f  Argmax3Hit: %.4f  ArgmaxFlankHit: %.4f",
                      train_metrics["loss"],
                      train_metrics.get("pr_auc", float("nan")),
                      train_metrics.get("roc_auc", float("nan")),
                      train_metrics.get("topk_acc", float("nan")),
-                     train_metrics.get("best_f1", float("nan")))
-        logger.info("  Val   — Loss: %.6f  PR-AUC: %.4f  ROC-AUC: %.4f  Top-k: %.4f  Best-F1: %.4f",
+                     train_metrics.get("best_f1", float("nan")),
+                     train_metrics.get("argmax_hit_rate", float("nan")),
+                     train_metrics.get("argmax3_hit_rate", float("nan")),
+                     train_metrics.get("argmax_flank_hit_rate", float("nan")))
+        logger.info("  Val   — Loss: %.6f  PR-AUC: %.4f  ROC-AUC: %.4f  Top-k: %.4f  Best-F1: %.4f  ArgmaxHit: %.4f  Argmax3Hit: %.4f  ArgmaxFlankHit: %.4f",
                      val_metrics["loss"],
                      val_metrics.get("pr_auc", float("nan")),
                      val_metrics.get("roc_auc", float("nan")),
                      val_metrics.get("topk_acc", float("nan")),
-                     val_metrics.get("best_f1", float("nan")))
+                     val_metrics.get("best_f1", float("nan")),
+                     val_metrics.get("argmax_hit_rate", float("nan")),
+                     val_metrics.get("argmax3_hit_rate", float("nan")),
+                     val_metrics.get("argmax_flank_hit_rate", float("nan")))
         logger.info("  Train counts: %d true positives, %d predicted positives out of %d",
                      train_metrics["true_pos"], train_metrics["pred_pos"], train_metrics.get("n_total", 0))
         logger.info("  Val   counts: %d true positives, %d predicted positives out of %d",
