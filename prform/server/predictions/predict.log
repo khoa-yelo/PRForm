@@ -1,0 +1,11 @@
+2026-04-05 01:57:19,342 - INFO - Starting PRF prediction ...
+2026-04-05 01:57:19,342 - INFO - Reading FASTA from example_data/GCF_000865725.1_ViralMultiSegProj15521_genomic.fna
+2026-04-05 01:57:19,348 - INFO - Parsed 8 blocks from FASTA
+2026-04-05 01:57:19,348 - INFO - Dataset: 8 blocks from example_data/GCF_000865725.1_ViralMultiSegProj15521_genomic.fna (block_len=15000, flank=5000)
+2026-04-05 01:57:19,350 - INFO - Device: cpu
+2026-04-05 01:57:19,531 - INFO - Loaded PRForm_10k from model_best.pth
+2026-04-05 01:57:19,531 - INFO - Running inference ...
+2026-04-05 01:57:25,324 - INFO - Done: 8 blocks × 15000 positions per block
+2026-04-05 01:57:25,365 - INFO - Per-nucleotide HDF5 saved to predictions/predictions.h5
+2026-04-05 01:57:25,484 - INFO - Per-record summary saved to predictions/predictions_per_record.tsv  (8 records)
+2026-04-05 01:57:25,484 - INFO - All outputs written to predictions
