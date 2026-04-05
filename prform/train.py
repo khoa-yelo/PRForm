@@ -72,6 +72,12 @@ def parse_args():
         help="Use positive class weight for loss function",
     )
     parser.add_argument(
+        "--warmup_epochs",
+        type=int,
+        default=0,
+        help="Number of epochs for linear LR warm-up before cosine decay (0 = no warm-up)",
+    )
+    parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility"
     )
     parser.add_argument(
@@ -271,6 +277,35 @@ def train(args, logger):
     criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="none")
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
+    # Build LR scheduler: optional linear warm-up then cosine annealing
+    if args.warmup_epochs > 0:
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=1e-8 / args.learning_rate,
+            end_factor=1.0,
+            total_iters=args.warmup_epochs,
+        )
+        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, args.num_epochs - args.warmup_epochs),
+            eta_min=0.0,
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[args.warmup_epochs],
+        )
+        logger.info(
+            "LR schedule: linear warm-up for %d epochs, then cosine annealing for %d epochs",
+            args.warmup_epochs,
+            args.num_epochs - args.warmup_epochs,
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=args.num_epochs, eta_min=0.0
+        )
+        logger.info("LR schedule: cosine annealing for %d epochs (no warm-up)", args.num_epochs)
+
     logger.info("Training with batch size: %d", args.batch_size)
     logger.info("Training with learning rate: %.6f", args.learning_rate)
     logger.info("Training with num epochs: %d", args.num_epochs)
@@ -309,7 +344,7 @@ def train(args, logger):
             json.dump(metrics_history, f, indent=4)
 
         # Append one row to the CSV (write header only on first epoch)
-        row = {"epoch": epoch + 1}
+        row = {"epoch": epoch + 1, "lr": optimizer.param_groups[0]["lr"]}
         for split, m in [("train", train_metrics), ("val", val_metrics)]:
             for key in ["loss", "pr_auc", "roc_auc", "topk_acc", "best_f1", "true_pos", "pred_pos", "n_total"]:
                 row[f"{split}_{key}"] = m.get(key, float("nan"))
@@ -317,7 +352,9 @@ def train(args, logger):
             csv_path, mode="w" if epoch == 0 else "a", header=(epoch == 0), index=False
         )
 
-        logger.info("Epoch %d/%d", epoch + 1, args.num_epochs)
+        current_lr = optimizer.param_groups[0]["lr"]
+
+        logger.info("Epoch %d/%d  LR: %.8f", epoch + 1, args.num_epochs, current_lr)
         logger.info("  Train — Loss: %.6f  PR-AUC: %.4f  ROC-AUC: %.4f  Top-k: %.4f  Best-F1: %.4f",
                      train_metrics["loss"],
                      train_metrics.get("pr_auc", float("nan")),
@@ -348,6 +385,8 @@ def train(args, logger):
             checkpoint_path = os.path.join(args.output_dir, f"model_epoch_{epoch + 1}.pth")
             torch.save(model.state_dict(), checkpoint_path)
             logger.info("Model checkpoint saved to %s", checkpoint_path)
+
+        scheduler.step()
 
     # Save final model
     final_path = os.path.join(args.output_dir, "model_final.pth")
