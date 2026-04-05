@@ -25,6 +25,7 @@ from torch.utils.data import DataLoader
 from dataloader import PRFDataset
 from model import PRForm_10k, PRForm_2k, PRForm_400nt, PRForm_80nt
 from metrics import compute_all_metrics, to_serializable
+from augment import Augmentor
 
 
 def parse_args():
@@ -86,12 +87,62 @@ def parse_args():
         default="output",
         help="Directory to save model checkpoints",
     )
+    # --- Augmentation ---
+    parser.add_argument(
+        "--augment",
+        action="store_true",
+        help="Apply on-the-fly sequence augmentation to the training set",
+    )
+    parser.add_argument(
+        "--aug_point_sub_rate",
+        type=float,
+        default=0.005,
+        help="Per-nucleotide mutation rate for point substitution (default: 0.005)",
+    )
+    parser.add_argument(
+        "--aug_p_deletion",
+        type=float,
+        default=0.3,
+        help="Probability of applying deletion augmentation per sample (default: 0.3)",
+    )
+    parser.add_argument(
+        "--aug_p_insertion",
+        type=float,
+        default=0.2,
+        help="Probability of applying insertion augmentation per sample (default: 0.2)",
+    )
+    parser.add_argument(
+        "--aug_p_inversion",
+        type=float,
+        default=0.2,
+        help="Probability of applying inversion augmentation per sample (default: 0.2)",
+    )
+    parser.add_argument(
+        "--aug_p_rc",
+        type=float,
+        default=0.1,
+        help="Probability of reverse-complementing the whole sequence (default: 0.1)",
+    )
     return parser.parse_args()
 
 
 def get_dataloader(args):
     """Create data loaders for training and validation datasets."""
-    train_dataset = PRFDataset(args.train_data, args.train_fraction, flank=args.flank)
+    augmentor = None
+    if args.augment:
+        augmentor = Augmentor(
+            flank=args.flank,
+            point_sub_rate=args.aug_point_sub_rate,
+            p_deletion=args.aug_p_deletion,
+            p_insertion=args.aug_p_insertion,
+            p_inversion=args.aug_p_inversion,
+            p_rc=args.aug_p_rc,
+            seed=args.seed,
+        )
+
+    train_dataset = PRFDataset(
+        args.train_data, args.train_fraction, flank=args.flank, augmentor=augmentor
+    )
     val_dataset = PRFDataset(args.val_data, args.val_fraction, flank=args.flank)
 
     train_loader = DataLoader(
@@ -335,6 +386,15 @@ def train(args, logger):
     logger.info("Training with num epochs: %d", args.num_epochs)
     logger.info("Training with flank size: %d", args.flank)
     logger.info("Training with random seed: %d", args.seed)
+    if args.augment:
+        logger.info(
+            "Augmentation enabled — point_sub_rate=%.4f  p_deletion=%.2f  "
+            "p_insertion=%.2f  p_inversion=%.2f  p_rc=%.2f",
+            args.aug_point_sub_rate, args.aug_p_deletion,
+            args.aug_p_insertion, args.aug_p_inversion, args.aug_p_rc,
+        )
+    else:
+        logger.info("Augmentation disabled")
 
     metrics_history = []
     best_val_loss = float("inf")
