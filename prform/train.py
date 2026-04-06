@@ -70,7 +70,14 @@ def parse_args():
     parser.add_argument(
         "--use_class_weights",
         action="store_true",
-        help="Use positive class weight for loss function",
+        help="Use positive class weight for loss function (auto-computed as neg/pos ratio)",
+    )
+    parser.add_argument(
+        "--pos_weight",
+        type=float,
+        default=None,
+        help="Explicit positive class weight for BCEWithLogitsLoss (e.g. 2.0). "
+             "Overrides --use_class_weights if both are set.",
     )
     parser.add_argument(
         "--warmup_epochs",
@@ -342,9 +349,12 @@ def train(args, logger):
     )
 
     # Set up loss function
-    if args.use_class_weights:
+    if args.pos_weight is not None:
+        pos_weight = torch.tensor(args.pos_weight, dtype=torch.float32).to(device)
+        logger.info("Using explicit positive class weight: %.2f", pos_weight.item())
+    elif args.use_class_weights:
         pos_weight = compute_pos_weight(train_dataset).to(device)
-        logger.info("Using positive class weight: %.2f", pos_weight.item())
+        logger.info("Using auto-computed positive class weight: %.2f", pos_weight.item())
     else:
         pos_weight = None
         logger.info("Not using class weights for loss function")
