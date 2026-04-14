@@ -17,6 +17,7 @@ Input CSV columns:
   record_id      – id of the record in the corresponding accession
   cluster_id     – a record_id representative id
   prf_position   – position of PRF event (1-based); can be comma-separated for multiple sites
+  prf_type       – type of PRF event (+1.0 or -1.0); can be comma-separated to match prf_position
   strand         – +/- strand
   sequence       – raw DNA/RNA sequence
   split          – train / val / test
@@ -31,11 +32,14 @@ Output per split:
     'accession_id', 'record_id', 'cluster_id', 'block_idx', 'species_taxid', 'genus_taxid', 'species_name', 'genus_name',
     'sample_weight' (float),
     'sequence' (one-hot, shape [block_len + 2*flank, 4]),
-    'y' (binary label, shape [block_len, 1])
+    'y' (one-hot label, shape [block_len, 3])
+         channel 0: no PRF  (background)
+         channel 1: PRF type -1
+         channel 2: PRF type +1
 
   HDF5 (.h5) – datasets per split:
     X     – (N, block_len + 2*flank, 4) uint8
-    Y     – (N, block_len, 1) uint8
+    Y     – (N, block_len, 3) uint8
     metadata (group) –
       accession_id   – (N,) variable-length string
       record_id      – (N,) variable-length string
@@ -125,7 +129,10 @@ def process_record_blocks(row, block_len: int, flank: int):
     dict with keys: accession_id, record_id, cluster_id,
          species_taxid, genus_taxid, species_name, genus_name,
          block_idx, sequence (np.ndarray shape [block_len+2*flank, 4]),
-         y (np.ndarray shape [block_len, 1])
+         y (np.ndarray shape [block_len, 3])
+             channel 0: no PRF (background)
+             channel 1: PRF type -1
+             channel 2: PRF type +1
     """
     raw_seq = str(row["sequence"]).strip()
     strand = str(row["strand"]).strip()
@@ -137,6 +144,17 @@ def process_record_blocks(row, block_len: int, flank: int):
         p = p.strip()
         if p and p.lower() != "nan":
             prf_positions.append(int(float(p)))  # 1-based
+
+    # Parse PRF type(s) – must align with prf_positions; default +1 if missing
+    type_raw = str(row.get("prf_type", "")).strip()
+    prf_types = []
+    for t in type_raw.split(","):
+        t = t.strip()
+        if t and t.lower() != "nan":
+            prf_types.append(float(t))
+    # Pad with +1.0 if fewer types than positions
+    while len(prf_types) < len(prf_positions):
+        prf_types.append(1.0)
 
     L = len(raw_seq)
 
@@ -170,16 +188,22 @@ def process_record_blocks(row, block_len: int, flank: int):
     while idx + window <= total:
         block_x = oh[idx : idx + window]  # (block_len + 2*flank, 4)
 
-        # Build Y for inner block_len region
-        y = np.zeros((block_len, 1), dtype=np.uint8)
-        for pos in prf_positions_0b:
+        # Build Y for inner block_len region: 3-class one-hot
+        #   channel 0 = no PRF (background), channel 1 = dir -1, channel 2 = dir +1
+        y = np.zeros((block_len, 3), dtype=np.uint8)
+        y[:, 0] = 1  # default: all positions are background
+        for pos, prf_type in zip(prf_positions_0b, prf_types):
             # pos is 0-based index in the original (pre-pad) sequence
             # In the padded+flanked array, the core region of this block
             # starts at idx+flank and covers block_len positions.
             # The core-relative position is: pos - (idx+flank - flank) = pos - idx
             rel = pos - idx
             if 0 <= rel < block_len:
-                y[rel, 0] = 1
+                y[rel, 0] = 0  # clear background
+                if prf_type < 0:
+                    y[rel, 1] = 1  # type -1
+                else:
+                    y[rel, 2] = 1  # type +1
 
         yield {
             "accession_id": row["accession_id"],
@@ -192,7 +216,7 @@ def process_record_blocks(row, block_len: int, flank: int):
             "sample_weight": float(row.get("sample_weight", 1.0)),
             "block_idx": blk_idx,
             "sequence": block_x,  # shape (block_len + 2*flank, 4)
-            "y": y,               # shape (block_len, 1)
+            "y": y,               # shape (block_len, 3): [no-PRF, dir-1, dir+1]
         }
 
         idx += block_len
@@ -214,7 +238,7 @@ def save_h5(records, outdir):
 
     Layout per file:
       X              – (N, block_len + 2*flank, 4) uint8
-      Y              – (N, block_len, 1)            uint8
+      Y              – (N, block_len, 3)            uint8  [no-PRF, dir-1, dir+1]
       metadata/
         accession_id – (N,) variable-length string
         record_id    – (N,) variable-length string
@@ -302,7 +326,7 @@ def main():
     df = pd.read_csv(args.csv)
     logging.info(f"Loaded {len(df)} records")
 
-    required_cols = {"accession_id", "record_id", "prf_position", "strand", "sequence", "split"}
+    required_cols = {"accession_id", "record_id", "prf_position", "prf_type", "strand", "sequence", "split"}
     missing = required_cols - set(df.columns)
     if missing:
         raise ValueError(f"CSV is missing required columns: {missing}")
@@ -328,7 +352,7 @@ def main():
 
     # --- Summary ---
     for split_name, recs in records.items():
-        n_pos = sum(int(r["y"].sum()) for r in recs)
+        n_pos = sum(int(r["y"][:, 1:].sum()) for r in recs)  # channels 1+2 = PRF sites
         n_tx = len(set(r["record_id"] for r in recs))
         logging.info(
             f"{split_name:5s}: {len(recs):6d} blocks from {n_tx:5d} records, "

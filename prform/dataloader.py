@@ -15,6 +15,11 @@ Returns tensors in the format expected by the PRForm model:
 
 The encoding dimension C is auto-detected from the data and exposed via
 the `in_channels` property so the model can be constructed accordingly.
+
+Augmentation is applied on-the-fly in __getitem__ when an Augmentor is provided.
+Pass an augment.Augmentor instance to the constructor; it is only applied during
+training (not validation/test) — the caller is responsible for not passing one
+to the validation dataset.
 """
 
 import pickle
@@ -47,12 +52,18 @@ class PRFDataset(Dataset):
     in_channels : int
         Number of encoding channels (last dim of sequence array).
         Read from the data — not hardcoded.
+    augmentor : augment.Augmentor or None
+        Optional on-the-fly augmentor applied in __getitem__ before
+        transposing x to channels-first format.  Pass None (default) to
+        disable augmentation (e.g. for validation / test sets).
     """
 
-    def __init__(self, path, fraction=1.0, flank=5000):
+    def __init__(self, path, fraction=1.0, flank=5000, augmentor=None):
         super().__init__()
         self.path = path
         self.flank = flank
+
+        self.augmentor = augmentor
 
         if path.endswith(".h5"):
             self._init_h5(path, fraction)
@@ -136,11 +147,16 @@ class PRFDataset(Dataset):
             x = self._X[idx]     # (L, C) uint8
             y = self._Y[idx]     # (block_len, 1) uint8
 
-        # Transpose X from (L, C) → (C, L) for Conv1d
-        x = np.asarray(x, dtype=np.float32).T  # (C, L)
-
-        # Squeeze Y from (block_len, 1) → (block_len,) for BCEWithLogitsLoss
+        # Squeeze Y from (block_len, 1) → (block_len,) before augmentation
+        x = np.asarray(x, dtype=np.float32)              # (L, C)
         y = np.asarray(y, dtype=np.float32).squeeze(-1)  # (block_len,)
+
+        # Apply on-the-fly augmentation (train only; caller passes None for val/test)
+        if self.augmentor is not None:
+            x, y = self.augmentor(x, y)
+
+        # Transpose X from (L, C) → (C, L) for Conv1d
+        x = x.T  # (C, L)
 
         meta = self._read_metadata(idx)
 
