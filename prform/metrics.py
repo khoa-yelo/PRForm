@@ -1,14 +1,14 @@
 """
 Metrics for PRF (Programmed Ribosomal Frameshift) prediction model evaluation.
 
-Adapted from SpliceAI metrics for binary classification:
-  - Single-class PR-AUC, ROC-AUC
-  - Top-k accuracy for the positive (PRF) class
-  - F1, precision, recall at a given threshold
+Adapted from SpliceAI metrics for 3-class classification:
+  - Classes: 0 = no PRF, 1 = PRF type -1, 2 = PRF type +1
+  - Binary PRF detection metrics (PR-AUC, ROC-AUC, F1) using p(PRF) = p(cls=1) + p(cls=2)
+  - Type accuracy: among true PRF positions, fraction where PRF type is correctly predicted
 
-All functions expect:
-  probs:   np.ndarray of shape (N,) — predicted probabilities for PRF class
-  targets: np.ndarray of shape (N,) — binary labels (0 or 1)
+compute_all_metrics expects:
+  probs_3:     np.ndarray of shape (N, 3) — softmax probabilities for each class
+  targets_cls: np.ndarray of shape (N,)   — class indices (0, 1, or 2)
 """
 
 import numpy as np
@@ -209,26 +209,89 @@ def argmax_flank_hit_rate(probs, targets, record_ids, flank=3):
     return float(hits / total) if total > 0 else float("nan")
 
 
-def compute_all_metrics(probs, targets):
+def type_accuracy(probs_3, targets_cls):
     """
-    Compute all metrics for a binary PRF prediction task.
+    Type accuracy among true PRF positions.
+
+    Among positions where the true label is PRF (class 1 or 2), what fraction
+    has the predicted class (argmax of probs_3) matching the true class?
 
     Args:
-        probs (np.ndarray):   shape (N,) predicted probabilities.
-        targets (np.ndarray): shape (N,) binary labels.
+        probs_3 (np.ndarray):     shape (N, 3) softmax probabilities.
+        targets_cls (np.ndarray): shape (N,) class indices (0, 1, 2).
     Returns:
-        dict with all metric values.
+        float: type accuracy, or NaN if no true PRF positions exist.
     """
-    best_f1, best_thresh = best_f1_threshold(probs, targets)
+    prf_mask = targets_cls > 0
+    if prf_mask.sum() == 0:
+        return float("nan")
+    pred_cls = probs_3[prf_mask].argmax(axis=1)
+    true_cls = targets_cls[prf_mask]
+    return float((pred_cls == true_cls).mean())
+
+
+def compute_type_metrics(probs_3, targets_cls, type_cls):
+    """
+    Binary metrics for a single PRF type vs all others.
+
+    Uses probs_3[:, type_cls] as the predicted score and
+    (targets_cls == type_cls) as the binary label.
+
+    Args:
+        probs_3 (np.ndarray):     shape (N, 3) softmax probabilities.
+        targets_cls (np.ndarray): shape (N,) class indices (0, 1, 2).
+        type_cls (int):           1 for -1 PRF type, 2 for +1 PRF type.
+    Returns:
+        dict with topk_acc, pr_auc, roc_auc, best_f1, best_f1_threshold,
+        metrics_at_0.5, n_positive.
+    """
+    scores = probs_3[:, type_cls]
+    binary_targets = (targets_cls == type_cls).astype(np.int8)
+    best_f1_val, best_thresh = best_f1_threshold(scores, binary_targets)
     return {
-        "topk_acc": topk_accuracy(probs, targets),
-        "pr_auc": pr_auc(probs, targets),
-        "roc_auc": roc_auc(probs, targets),
+        "topk_acc": topk_accuracy(scores, binary_targets),
+        "pr_auc": pr_auc(scores, binary_targets),
+        "roc_auc": roc_auc(scores, binary_targets),
+        "best_f1": best_f1_val,
+        "best_f1_threshold": best_thresh,
+        "metrics_at_0.5": classification_metrics_at_threshold(scores, binary_targets, 0.5),
+        "n_positive": int(binary_targets.sum()),
+    }
+
+
+def compute_all_metrics(probs_3, targets_cls):
+    """
+    Compute all metrics for the 3-class PRF prediction task.
+
+    Binary PRF detection metrics use prf_prob = p(class=1) + p(class=2) as the
+    positive score and binary_target = (class > 0) as the label.
+
+    Per-type metrics ('prf_minus1', 'prf_plus1') treat each PRF type as binary
+    vs all others, using probs_3[:, c] as the score and (targets_cls == c) as
+    the label.
+
+    Args:
+        probs_3 (np.ndarray):     shape (N, 3) softmax probabilities [no-PRF, type-1, type+1].
+        targets_cls (np.ndarray): shape (N,) class indices (0=no-PRF, 1=type-1, 2=type+1).
+    Returns:
+        dict with all metric values, including 'prf_minus1' and 'prf_plus1' sub-dicts.
+    """
+    prf_probs = probs_3[:, 1] + probs_3[:, 2]   # (N,) probability of any PRF
+    binary_targets = (targets_cls > 0).astype(np.int8)
+
+    best_f1, best_thresh = best_f1_threshold(prf_probs, binary_targets)
+    return {
+        "topk_acc": topk_accuracy(prf_probs, binary_targets),
+        "pr_auc": pr_auc(prf_probs, binary_targets),
+        "roc_auc": roc_auc(prf_probs, binary_targets),
         "best_f1": best_f1,
         "best_f1_threshold": best_thresh,
-        "metrics_at_0.5": classification_metrics_at_threshold(probs, targets, 0.5),
-        "n_positive": int(targets.sum()),
-        "n_total": len(targets),
+        "metrics_at_0.5": classification_metrics_at_threshold(prf_probs, binary_targets, 0.5),
+        "type_accuracy": type_accuracy(probs_3, targets_cls),
+        "prf_minus1": compute_type_metrics(probs_3, targets_cls, type_cls=1),
+        "prf_plus1": compute_type_metrics(probs_3, targets_cls, type_cls=2),
+        "n_positive": int(binary_targets.sum()),
+        "n_total": len(targets_cls),
     }
 
 
