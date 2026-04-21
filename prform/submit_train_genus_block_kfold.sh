@@ -1,13 +1,14 @@
 #!/bin/bash
-#SBATCH --job-name=genus_train
-#SBATCH --output=logs/train_genus_%j.out
-#SBATCH --error=logs/train_genus_%j.err
+#SBATCH --job-name=genus_kfold_train
+#SBATCH --output=logs/train_genus_kfold_%A_%a.out
+#SBATCH --error=logs/train_genus_kfold_%A_%a.err
 #SBATCH --time=12:00:00
 #SBATCH --partition=preempt
 #SBATCH --account=marlowe-m000151
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64GB
 #SBATCH --cpus-per-task=4
+#SBATCH --array=0-4
 
 mkdir -p logs
 
@@ -19,15 +20,20 @@ if ! nvidia-smi > /dev/null 2>&1; then
     echo "CUDA is not available"
     exit 1
 fi
-# check pytoch cuda is available
+# check pytorch cuda is available
 if ! python -c "import torch; print(torch.cuda.is_available())" > /dev/null 2>&1; then
     echo "PyTorch CUDA is not available"
     exit 1
 fi
+
+FOLD_DIR=/projects/m000151/khoa/repos/PRForm/training_data/genus_block_kfold/fold_${SLURM_ARRAY_TASK_ID}
+
+echo "=== Training fold ${SLURM_ARRAY_TASK_ID}: ${FOLD_DIR} ==="
+
 python train.py \
-    --train_data /projects/m000151/khoa/repos/PRForm/training_data/training_data_genus_block/train.h5 \
-    --val_data /projects/m000151/khoa/repos/PRForm/training_data/training_data_genus_block/val.h5 \
-    --output_dir /projects/m000151/khoa/repos/PRForm/training_data/training_data_genus_block/outputs \
+    --train_data ${FOLD_DIR}/train.h5 \
+    --val_data ${FOLD_DIR}/val.h5 \
+    --output_dir ${FOLD_DIR}/outputs \
     --batch_size 36 \
     --num_epochs 50 \
     --learning_rate 0.001 \
@@ -37,4 +43,6 @@ python train.py \
     --warmup_epochs 5 \
     --augment \
     --pos_weight 2.0 \
-    --seed 42 
+    --seed 42
+
+echo "=== Done fold ${SLURM_ARRAY_TASK_ID} ==="

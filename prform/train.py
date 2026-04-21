@@ -246,6 +246,9 @@ def run_epoch(model, loader, criterion, optimizer, device, train=True, neg_ratio
             sample_weights = torch.tensor(
                 _meta["sample_weight"], dtype=torch.float32, device=device
             )  # (B,)
+            # Missing-genus rows ship with NaN weights in metadata; treat as 1.0
+            # so a single bad row does not poison the loss and gradients.
+            sample_weights = torch.nan_to_num(sample_weights, nan=1.0)
             if train:
                 optimizer.zero_grad()
 

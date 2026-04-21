@@ -3,7 +3,11 @@ augment.py — On-the-fly sequence augmentation for one-hot-encoded nucleotide s
 
 All transforms operate on:
   x : np.ndarray, shape (L, C)       — one-hot sequence (L positions, C channels; stored as (L,C))
-  y : np.ndarray, shape (block_len,) — binary label array (squeezed form expected by the model)
+  y : np.ndarray, shape (block_len, K) — one-hot class labels (K classes; channel 0 = background)
+                 or shape (block_len,) — binary labels (legacy)
+
+For 2D y, positions with no signal default to background one-hot [1, 0, ..., 0]
+rather than all-zero, so CrossEntropyLoss sees a valid class index everywhere.
 
 Encoding convention (matches create_datasets.py):
   A=0, C=1, G=2, T/U=3
@@ -61,6 +65,30 @@ def _random_onehot(size: int, rng: np.random.Generator, n_channels: int = 4) -> 
 def _label_window(L: int, block_len: int, flank: int) -> tuple[int, int]:
     """Return (start, stop) of the label window inside a sequence of length L."""
     return flank, flank + block_len
+
+
+def _empty_like_labels(y: np.ndarray) -> np.ndarray:
+    """Allocate a labels array matching y, filled with the background class.
+
+    For 2D one-hot y, channel 0 is background → sets [:, 0] = 1.
+    For 1D binary y, returns zeros.
+    """
+    new_y = np.zeros_like(y)
+    if new_y.ndim == 2:
+        new_y[:, 0] = 1
+    return new_y
+
+
+def _bg_row(y: np.ndarray):
+    """Return the background value for a single row of y.
+
+    Scalar 0 for 1D binary y; one-hot row [1, 0, ..., 0] for 2D y.
+    """
+    if y.ndim == 2:
+        row = np.zeros(y.shape[1], dtype=y.dtype)
+        row[0] = 1
+        return row
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +190,7 @@ def deletion(
     #   p            if p < start
     #   p + chunk    if start <= p < L - chunk_size  (after deletion, content shifts)
     #   padding      if p >= L - chunk_size
-    new_y = np.zeros_like(y)
+    new_y = _empty_like_labels(y)
     lbl_start = flank
     lbl_end = flank + block_len
 
@@ -173,12 +201,11 @@ def deletion(
         elif p < L - chunk_size:
             old_p = p + chunk_size
         else:
-            continue                         # padding region → label stays 0
+            continue                         # padding region → background
 
-        # Map old_p back to label index
         if lbl_start <= old_p < lbl_end:
             new_y[i] = y[old_p - lbl_start]
-        # else: old_p was in flank → label 0
+        # else: old_p was in flank → background (default)
 
     return new_x, new_y
 
@@ -222,7 +249,7 @@ def insertion(
     #   p            if p < pos                   (before insertion)
     #   random nt    if pos <= p < pos+chunk_size (inserted region)
     #   p - chunk    if p >= pos + chunk_size      (after insertion)
-    new_y = np.zeros_like(y)
+    new_y = _empty_like_labels(y)
     lbl_start = flank
     lbl_end = flank + block_len
 
@@ -232,7 +259,7 @@ def insertion(
         if p < pos:
             old_p = p
         elif p < pos + chunk_size:
-            continue                          # inserted random nt → no PRF label
+            continue                          # inserted random nt → background
         else:
             old_p = p - chunk_size
 
@@ -298,6 +325,7 @@ def inversion(
         return new_x, y                       # inversion entirely outside label window
 
     new_y = y.copy()
+    bg = _bg_row(y)
     for p in range(inv_lbl_start, inv_lbl_end):
         i = p - lbl_start                     # index in y for new position
         old_p = start + end - 1 - p           # old position this came from
@@ -305,7 +333,7 @@ def inversion(
         if lbl_start <= old_p < lbl_end:
             new_y[i] = y[old_p - lbl_start]
         else:
-            new_y[i] = 0                      # source was in flank → no PRF label
+            new_y[i] = bg                     # source was in flank → background
 
     return new_x, new_y
 

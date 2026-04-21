@@ -62,10 +62,19 @@ from sklearn.isotonic import IsotonicRegression
 # ---------------------------------------------------------------------------
 
 def _load_predictions(h5_path):
-    """Load predictions.h5 → (probs, targets, meta)."""
+    """Load predictions.h5 → (probs, targets, valid_mask, meta).
+
+    ``valid_mask`` marks real input positions (``True``) vs right-padding
+    added by the block builder (``False``). Older h5 files that predate the
+    field fall back to all-valid.
+    """
     with h5py.File(h5_path, "r") as hf:
         probs = hf["probabilities"][:].astype(np.float32)   # (N, block_len)
         targets = hf["targets"][:].astype(np.int8)           # (N, block_len)
+        if "valid_mask" in hf:
+            valid_mask = hf["valid_mask"][:].astype(bool)
+        else:
+            valid_mask = np.ones_like(targets, dtype=bool)
         meta = {}
         for k in hf["metadata"].keys():
             v = hf["metadata"][k][:]
@@ -73,30 +82,38 @@ def _load_predictions(h5_path):
                 meta[k] = [x.decode() if isinstance(x, bytes) else str(x) for x in v]
             else:
                 meta[k] = v.tolist()
-    return probs, targets, meta
+    return probs, targets, valid_mask, meta
 
 
-def _reconstruct_records(probs, targets, meta):
-    """Group blocks by (accession_id, record_id), sort by block_idx."""
+def _reconstruct_records(probs, targets, valid_mask, meta):
+    """Group blocks by (accession_id, record_id), sort by block_idx, and
+    drop right-padding so each record covers only real input positions."""
     N = probs.shape[0]
     acc_ids = meta.get("accession_id", [""] * N)
     rec_ids = meta.get("record_id", [""] * N)
     blk_idxs = np.array(meta.get("block_idx", list(range(N))), dtype=int)
 
-    groups = defaultdict(lambda: {"p": [], "t": [], "b": []})
+    groups = defaultdict(lambda: {"p": [], "t": [], "v": [], "b": []})
     for i in range(N):
         key = f"{acc_ids[i]}::{rec_ids[i]}"
         groups[key]["p"].append(probs[i])
         groups[key]["t"].append(targets[i])
+        groups[key]["v"].append(valid_mask[i])
         groups[key]["b"].append(int(blk_idxs[i]))
 
     records = []
     for rid, data in groups.items():
         order = np.argsort(data["b"])
+        full_p = np.concatenate([data["p"][j] for j in order])
+        full_t = np.concatenate([data["t"][j] for j in order]).astype(np.int8)
+        full_v = np.concatenate([data["v"][j] for j in order]).astype(bool)
+        if not full_v.all():
+            full_p = full_p[full_v]
+            full_t = full_t[full_v]
         records.append({
             "record_id": rid,
-            "probs":   np.concatenate([data["p"][j] for j in order]),
-            "targets": np.concatenate([data["t"][j] for j in order]).astype(np.int8),
+            "probs":   full_p,
+            "targets": full_t,
         })
     return records
 
@@ -406,16 +423,24 @@ def main():
 
     # --- Load ---
     logger.info("Loading %s", args.predictions)
-    probs, targets, meta = _load_predictions(args.predictions)
+    probs, targets, valid_mask, meta = _load_predictions(args.predictions)
     logger.info("  %d blocks × %d positions per block", *probs.shape)
-    logger.info("  %d true positive positions out of %d total", int(targets.sum()), targets.size)
+    n_valid = int(valid_mask.sum())
+    logger.info(
+        "  %d real positions, %d padded positions",
+        n_valid, int(valid_mask.size - n_valid),
+    )
+    logger.info(
+        "  %d true positive positions out of %d real positions",
+        int(targets[valid_mask].sum()), n_valid,
+    )
 
-    if targets.sum() == 0:
+    if targets[valid_mask].sum() == 0:
         logger.warning("No positive labels found — PR and FDR metrics are undefined. "
                        "Run on a labelled dataset (e.g. validation set predictions).")
         return
 
-    records = _reconstruct_records(probs, targets, meta)
+    records = _reconstruct_records(probs, targets, valid_mask, meta)
     n_with_pos = sum(1 for r in records if r["targets"].sum() > 0)
     logger.info("  %d records (%d with ≥1 true positive)", len(records), n_with_pos)
 

@@ -3,7 +3,8 @@
 #SBATCH --output=logs/create_datasets_%j.out
 #SBATCH --error=logs/create_datasets_%j.err
 #SBATCH --time=12:00:00
-#SBATCH --partition=normal
+#SBATCH --partition=preempt
+#SBATCH --account=marlowe-m000151
 #SBATCH --mem=64GB
 #SBATCH --cpus-per-task=4
 
@@ -21,10 +22,10 @@ python ./utils/create_datasets.py \
     --format h5 \
     --outdir ../training_data/training_data_genus_block
 
-# echo "=== Creating dataset: training_data_species_block ==="
-# python ./utils/create_datasets.py \
-#     --csv ../training_data/training_data_species_block.csv \
-#     --format h5 \
-#     --outdir ../training_data/training_data_species_block
+echo "=== Creating dataset: training_data_species_block ==="
+python ./utils/create_datasets.py \
+    --csv ../training_data/training_data_species_block.csv \
+    --format h5 \
+    --outdir ../training_data/training_data_species_block
 
 # echo "=== All datasets created ==="

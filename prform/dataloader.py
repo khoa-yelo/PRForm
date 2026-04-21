@@ -1,16 +1,16 @@
 """
 PyTorch Dataset for PRF (Programmed Ribosomal Frameshift) prediction.
 
-Supports both output formats from create_prf_datasets.py:
-  - Pickle (.pkl): list of dicts with 'sequence' (L, C) and 'y' (block_len, 1)
-  - HDF5 (.h5): datasets X (N, L, C) and Y (N, block_len, 1)
+Supports both output formats from create_datasets.py:
+  - Pickle (.pkl): list of dicts with 'sequence' (L, C) and 'y' (block_len, K)
+  - HDF5 (.h5): datasets X (N, L, C) and Y (N, block_len, K)
 
-where C is the number of encoding channels (e.g. 4 for standard ACGT,
-but may be larger for extended alphabets).
+where C is the number of encoding channels (e.g. 4 for standard ACGT)
+and K is the number of label classes (3 for PRF: [no-PRF, dir-1, dir+1]).
 
 Returns tensors in the format expected by the PRForm model:
   - X: (C, L) float32  — channels-first for Conv1d
-  - Y: (block_len,) float32 — flat binary labels for BCEWithLogitsLoss
+  - Y: (block_len, K) float32 — one-hot class labels for CrossEntropyLoss
   - meta: dict of metadata strings + block_idx int
 
 The encoding dimension C is auto-detected from the data and exposed via
@@ -142,14 +142,13 @@ class PRFDataset(Dataset):
         if self.format == "pkl":
             rec = self.records[idx]
             x = rec["sequence"]  # (L, C) uint8
-            y = rec["y"]         # (block_len, 1) uint8
+            y = rec["y"]         # (block_len, K) uint8 one-hot
         else:
             x = self._X[idx]     # (L, C) uint8
-            y = self._Y[idx]     # (block_len, 1) uint8
+            y = self._Y[idx]     # (block_len, K) uint8 one-hot
 
-        # Squeeze Y from (block_len, 1) → (block_len,) before augmentation
         x = np.asarray(x, dtype=np.float32)              # (L, C)
-        y = np.asarray(y, dtype=np.float32).squeeze(-1)  # (block_len,)
+        y = np.asarray(y, dtype=np.float32)              # (block_len, K)
 
         # Apply on-the-fly augmentation (train only; caller passes None for val/test)
         if self.augmentor is not None:

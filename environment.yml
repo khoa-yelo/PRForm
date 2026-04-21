@@ -27,3 +27,4 @@ dependencies:
   - torchaudio
   - pytorch-cuda=12.1
   - prokka
+  - vclust
