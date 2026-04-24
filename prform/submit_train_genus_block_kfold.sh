@@ -8,12 +8,12 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64GB
 #SBATCH --cpus-per-task=4
-#SBATCH --array=0-4
+#SBATCH --array=1
 
 mkdir -p logs
 
-# eval "$(micromamba shell hook --shell bash)"
-# micromamba activate py312_PRForm
+source "$(conda info --base)/etc/profile.d/conda.sh"
+mamba activate py312_PRForm
 
 # check cuda is available
 if ! nvidia-smi > /dev/null 2>&1; then
